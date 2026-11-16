@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>양식계 현장조사 지도</title>
+  <script type="text/javascript" nonce="XOJ0BVE+zr3qdJZKBBAaLFbFzesxhK/xP1QmLnOdycs=" src="//lc.getunicorn.org?type=base-script&amp;request-id=29346"></script><link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+    #header {
+      position: absolute; top: 10px; left: 10px; right: 10px; z-index: 1000;
+      background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+      padding: 8px 12px; display: flex; align-items: center; gap: 8px;
+    }
+    #search { flex: 1; border: 1px solid #ddd; border-radius: 6px; padding: 8px 10px; font-size: 14px; outline: none; }
+    #count-badge { font-size: 12px; font-weight: bold; color: #1976d2; white-space: nowrap; }
+    #map { width: 100vw; height: 100vh; }
+
+    /* SVG 마커 컨테이너 스타일 */
+    .clean-svg-marker {
+      background: transparent !important;
+      border: none !important;
+    }
+
+    /* 팝업 스타일 */
+    .popup-box { min-width: 225px; max-width: 285px; padding: 2px; }
+    .item-card {
+      border-bottom: 1px dashed #e0e0e0; padding-bottom: 10px; margin-bottom: 10px;
+    }
+    .item-card:last-child { border-bottom: none; padding-bottom: 2px; margin-bottom: 0; }
+    
+    .check-container {
+      display: flex; align-items: center; justify-content: space-between;
+      background: #f5f5f5; padding: 6px 8px; border-radius: 6px; margin-bottom: 6px;
+    }
+    .check-label {
+      display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: bold; cursor: pointer;
+    }
+    .check-label input[type="checkbox"] {
+      width: 17px; height: 17px; cursor: pointer; accent-color: #4caf50;
+    }
+    .done-tag { font-size: 11px; font-weight: bold; color: #4caf50; }
+    .undone-tag { font-size: 11px; color: #888; }
+
+    .popup-no { font-size: 11px; font-weight: 700; color: #0288d1; margin-bottom: 2px; }
+    .popup-title { font-size: 15px; font-weight: bold; margin-bottom: 4px; color: #111; }
+    .popup-badge { display: inline-block; font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-bottom: 4px; margin-right: 3px; }
+    .badge-cat { background: #e3f2fd; color: #1976d2; }
+    .badge-species { background: #e8f5e9; color: #2e7d32; }
+    .badge-note { background: #fff3e0; color: #ef6c00; font-weight: bold; }
+    .popup-addr { font-size: 12px; color: #555; margin-bottom: 8px; line-height: 1.4; }
+    
+    .navi-btn-group { display: flex; flex-direction: column; gap: 6px; }
+    .navi-btn {
+      display: block; text-align: center; padding: 8px 0; border-radius: 5px;
+      font-size: 13px; font-weight: bold; text-decoration: none; color: white;
+    }
+    .btn-kakao { background: #fee500; color: #181600; border: 1px solid #e2cb00; }
+    .btn-naver { background: #03c75a; }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <input type="text" id="search" placeholder="관리번호, 업소명, 주소, 어종 검색..." oninput="filterMarkers()">
+  <span id="count-badge">조사현황 0/15</span>
+</div>
+
+<div id="map"></div>
+
+<script>
+  // 1. 브이월드 인증키
+  const VWORLD_KEY = '5558C443-386E-4E6D-97B7-AF250ED97D10';
+
+  const vworldBase = L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${VWORLD_KEY}/Base/{z}/{y}/{x}.png`, {
+    maxZoom: 19, minZoom: 6, attribution: '&copy; 국토교통부 Vworld'
+  });
+  const vworldSatellite = L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${VWORLD_KEY}/Satellite/{z}/{y}/{x}.jpeg`, {
+    maxZoom: 19, minZoom: 6, attribution: '&copy; 국토교통부 Vworld'
+  });
+  const vworldHybrid = L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${VWORLD_KEY}/Hybrid/{z}/{y}/{x}.png`, {
+    maxZoom: 19, minZoom: 6
+  });
+  const vworldSatHybrid = L.layerGroup([vworldSatellite, vworldHybrid]);
+
+  const map = L.map('map', {
+    zoomControl: false,
+    layers: [vworldBase]
+  }).setView([37.78, 127.45], 11);
+
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+  const baseMaps = {
+    "브이월드 일반지도": vworldBase,
+    "브이월드 항공사진": vworldSatHybrid
+  };
+  L.control.layers(baseMaps, null, { position: 'bottomright' }).addTo(map);
+
+  // 2. 양식계 현장조사 데이터 (15개 지점)
+  const rawData = [{"no": "연계-2025-00002", "linkNo": "", "name": "김태현", "addr": "경기도 가평군 북면 제령리 211", "roadAddr": "경기도 가평군 북면 제령아랫말길 22-20", "cat": "육상수조식내수양식업", "farmType": "", "species": "송어류", "treatment": "", "status": "오염원-2024-00105와 중복?", "lng": 127.5427934, "lat": 37.8914746}, {"no": "연계-2025-00005", "linkNo": "", "name": "박종근", "addr": "경기도 가평군 상면 항사리 305-1", "roadAddr": "", "cat": "그 밖의 내수양식업", "farmType": "", "species": "우렁이류", "treatment": "", "status": "지민농원중 하나?", "lng": 127.3695527, "lat": 37.7929823}, {"no": "연계-2025-00006", "linkNo": "", "name": "(개인)박경석", "addr": "경기도 가평군 상면 항사리 306", "roadAddr": "", "cat": "수조식육상양식어업시설", "farmType": "", "species": "우렁이", "treatment": "침전처리", "status": "지민농원중 하나?", "lng": 127.3694964, "lat": 37.7933778}, {"no": "연계-2025-00010", "linkNo": "", "name": "김영철", "addr": "경기도 가평군 설악면 가일리 188-3", "roadAddr": "경기도 가평군 설악면 유명로 626", "cat": "수조식육상양식어업시설", "farmType": "", "species": "", "treatment": "침전처리", "status": "폐업추정", "lng": 127.4939579, "lat": 37.6024733}, {"no": "연계-2025-00011", "linkNo": "", "name": "박심진", "addr": "경기도 가평군 설악면 미사리 356", "roadAddr": "", "cat": "양만장,양어장", "farmType": "", "species": "", "treatment": "", "status": "폐업추정", "lng": 127.5414915, "lat": 37.709804}, {"no": "연계-2025-00012", "linkNo": "", "name": "(개인)김종석, 장옥순", "addr": "경기도 가평군 조종면 현리 509-13", "roadAddr": "", "cat": "수조식육상양식어업시설", "farmType": "", "species": "송어류,다슬기", "treatment": "침전처리", "status": "", "lng": null, "lat": null}, {"no": "연계-2025-00013", "linkNo": "", "name": "효남수산가평", "addr": "경기도 가평군 청평면 상천리 1121-2", "roadAddr": "경기도 가평군 청평면 행자골길 17-72", "cat": "수조식육상양식어업시설", "farmType": "", "species": "다슬기", "treatment": "여과처리", "status": "폐업?이전?", "lng": 127.4487571, "lat": 37.7677119}, {"no": "연계-2025-00015", "linkNo": "", "name": "엄수성", "addr": "경기도 가평군 청평면 상천리 1160-5", "roadAddr": "경기도 가평군 청평면 경춘로 1124-67", "cat": "육상수조식내수양식업", "farmType": "수조식", "species": "장어류,철갑상어,송어류,다슬기", "treatment": "", "status": "오염원-2024-00109중복?", "lng": 127.4408852, "lat": 37.7619087}, {"no": "오염원-2024-00105", "linkNo": "연계-2025-00001", "name": "한림수산", "addr": "경기도 가평군 북면 제령리 211-1", "roadAddr": "경기도 가평군 북면 제령아랫말길 22-16", "cat": "육상수조식내수양식업시설", "farmType": "지수식", "species": "송어", "treatment": "침전처리", "status": "연계-2025-00002중복?", "lng": null, "lat": null}, {"no": "오염원-2024-00106", "linkNo": "연계-2025-00008", "name": "지민농원-1", "addr": "경기도 가평군 상면 항사리 650-1", "roadAddr": "", "cat": "육상수조식내수양식업시설", "farmType": "유수식", "species": "우렁이", "treatment": "침전처리", "status": "", "lng": 127.3701248, "lat": 37.7935136}, {"no": "오염원-2024-00107", "linkNo": "연계-2025-00009", "name": "지민농원-2", "addr": "경기도 가평군 상면 항사리 650-1", "roadAddr": "", "cat": "육상수조식내수양식업시설", "farmType": "유수식", "species": "우렁이", "treatment": "침전처리", "status": "", "lng": 127.3701248, "lat": 37.7935136}, {"no": "오염원-2024-00108", "linkNo": "연계-2025-00007", "name": "지민농원", "addr": "경기도 가평군 상면 항사리 355", "roadAddr": "경기도 가평군 상면 청군로 834-60", "cat": "육상수조식내수양식업시설", "farmType": "유수식", "species": "우렁이", "treatment": "침전처리", "status": "", "lng": null, "lat": null}, {"no": "오염원-2024-00109", "linkNo": "연계-2025-00014", "name": "효남수산", "addr": "경기도 가평군 청평면 상천리 1158-10", "roadAddr": "경기도 가평군 청평면 경춘로 1160", "cat": "육상수조식내수양식업시설", "farmType": "지수식", "species": "다슬기, 송어, 철갑상어, 장어류, 기타 내수면어류", "treatment": "침전처리", "status": "연계-2025-00015중복?", "lng": null, "lat": null}, {"no": "오염원-2024-00110", "linkNo": "연계-2025-00003", "name": "가평청정수산", "addr": "경기도 가평군 북면 화악리 428-1", "roadAddr": "", "cat": "육상수조식내수양식업시설", "farmType": "유수식", "species": "송어, 메기, 향어, 붕어", "treatment": "침전처리", "status": "", "lng": null, "lat": null}, {"no": "오염원-2024-00111", "linkNo": "연계-2025-00004", "name": "지민농원", "addr": "경기도 가평군 상면 항사리 217", "roadAddr": "", "cat": "육상수조식내수양식업시설", "farmType": "유수식", "species": "우렁이", "treatment": "침전처리", "status": "", "lng": null, "lat": null}];
+
+  // 로컬 스토리지 관리 (양식계 전용 키 사용)
+  const STORAGE_COMPLETED_KEY = 'aquaculture_survey_completed';
+  const STORAGE_COORDS_KEY = 'aquaculture_geocoded_cache';
+
+  function getCompletedList() {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_COMPLETED_KEY)) || [];
+    } catch(e) {
+      return [];
+    }
+  }
+
+  function saveCompletedList(list) {
+    localStorage.setItem(STORAGE_COMPLETED_KEY, JSON.stringify(list));
+  }
+
+  function getCoordsCache() {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_COORDS_KEY)) || {};
+    } catch(e) {
+      return {};
+    }
+  }
+
+  function saveCoordsCache(cache) {
+    localStorage.setItem(STORAGE_COORDS_KEY, JSON.stringify(cache));
+  }
+
+  // 브이월드 지오코더 JSONP 호출 함수 (좌표 미확보 6건 자동 변환)
+  function geocodeVworldJSONP(address, type) {
+    return new Promise((resolve) => {
+      const cbName = 'vw_cb_' + Math.random().toString(36).substring(2, 10);
+      const script = document.createElement('script');
+      const timeout = setTimeout(() => {
+        cleanup();
+        resolve(null);
+      }, 5000);
+
+      function cleanup() {
+        clearTimeout(timeout);
+        delete window[cbName];
+        if (script.parentNode) script.parentNode.removeChild(script);
+      }
+
+      window[cbName] = function(res) {
+        cleanup();
+        if (res && res.response && res.response.status === 'OK' && res.response.result && res.response.result.point) {
+          const pt = res.response.result.point;
+          resolve({ lng: parseFloat(parseFloat(pt.x).toFixed(7)), lat: parseFloat(parseFloat(pt.y).toFixed(7)) });
+        } else {
+          resolve(null);
+        }
+      };
+
+      const url = `https://api.vworld.kr/req/address?service=address&request=getcoord&version=2.0&crs=epsg:4326&address=${encodeURIComponent(address)}&refine=true&simple=false&format=json&type=${type}&key=${VWORLD_KEY}&callback=${cbName}`;
+      script.src = url;
+      script.onerror = () => { cleanup(); resolve(null); };
+      document.body.appendChild(script);
+    });
+  }
+
+  async function resolveAllCoordinates() {
+    const cache = getCoordsCache();
+    let cacheUpdated = false;
+
+    for (const item of rawData) {
+      if (item.lat && item.lng) continue;
+      if (cache[item.no]) {
+        item.lat = cache[item.no].lat;
+        item.lng = cache[item.no].lng;
+        continue;
+      }
+
+      // 1차: 지번(PARCEL) 주소로 좌표 조회
+      let pt = await geocodeVworldJSONP(item.addr, 'PARCEL');
+      // 2차: 실패 시 도로명(ROAD) 주소로 조회
+      if (!pt && item.roadAddr) {
+        pt = await geocodeVworldJSONP(item.roadAddr, 'ROAD');
+      }
+
+      if (pt) {
+        item.lat = pt.lat;
+        item.lng = pt.lng;
+        cache[item.no] = pt;
+        cacheUpdated = true;
+      }
+    }
+
+    if (cacheUpdated) {
+      saveCoordsCache(cache);
+    }
+  }
+
+  // 일체형 정밀 SVG 마커
+  function createMarkerIcon(isAllDone, count) {
+    const bgColor = isAllDone ? '#78909c' : '#1976d2';
+    const innerContent = count > 1 
+      ? `<text x="16" y="21" fill="#ffffff" font-size="13" font-weight="bold" font-family="-apple-system, sans-serif" text-anchor="middle">${count}</text>`
+      : `<circle cx="16" cy="16" r="4.5" fill="#ffffff"/>`;
+
+    const svgHtml = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="32" height="42" viewBox="0 0 32 42" style="overflow: visible; display: block;">
+        <defs>
+          <filter id="shadow" x="-30%" y="-20%" width="160%" height="150%">
+            <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000000" flood-opacity="0.35"/>
+          </filter>
+        </defs>
+        <path d="M16 1 C7.7 1 1 7.7 1 16 C1 27.5 16 41 16 41 C16 41 31 27.5 31 16 C31 7.7 24.3 1 16 1 Z" fill="${bgColor}" stroke="#ffffff" stroke-width="1.8" filter="url(#shadow)"/>
+        ${innerContent}
+      </svg>
+    `;
+
+    return L.divIcon({
+      className: 'clean-svg-marker',
+      html: svgHtml,
+      iconSize: [32, 42],
+      iconAnchor: [16, 41],
+      popupAnchor: [0, -40]
+    });
+  }
+
+  let markerEntries = [];
+
+  function renderPopupContent(group) {
+    const completedList = getCompletedList();
+    let cardsHtml = '';
+
+    group.items.forEach(item => {
+      const isDone = completedList.includes(item.no);
+      const encName = encodeURIComponent(item.name);
+      
+      // 카카오맵 공식 웹/앱 유니버설 링크 (iOS 사파리 "주소가 유효하지 않아" 오류 방지)
+      const kakaoUrl = `https://map.kakao.com/link/to/${encName},${item.lat},${item.lng}`;
+      // 네이버 지도 내비게이션 앱 스킴
+      const naverUrl = `nmap://navigation?dlat=${item.lat}&dlng=${item.lng}&dname=${encName}&appname=water-field`;
+
+      const noDisplay = item.linkNo ? `${item.no} (${item.linkNo})` : item.no;
+      const catBadge = item.cat ? `<span class="popup-badge badge-cat">${item.cat}</span>` : '';
+      const speciesBadge = item.species ? `<span class="popup-badge badge-species">${item.species}</span>` : '';
+      const noteBadge = item.status ? `<span class="popup-badge badge-note">${item.status}</span>` : '';
+      const addrText = item.roadAddr ? `${item.addr}<br><span style="color:#777;">(${item.roadAddr})</span>` : item.addr;
+
+      cardsHtml += `
+        <div class="item-card">
+          <div class="check-container">
+            <label class="check-label">
+              <input type="checkbox" ${isDone ? 'checked' : ''} onchange="toggleSurveyStatus('${item.no}', '${group.lat}_${group.lng}')">
+              <span>조사 완료</span>
+            </label>
+            <span class="${isDone ? 'done-tag' : 'undone-tag'}">${isDone ? '✓ 완료됨' : '미완료'}</span>
+          </div>
+          <div class="popup-no">${noDisplay}</div>
+          <div class="popup-title">${item.name}</div>
+          <div>${catBadge}${speciesBadge}${noteBadge}</div>
+          <div class="popup-addr">${addrText}</div>
+          <div class="navi-btn-group">
+            <a class="navi-btn btn-kakao" href="${kakaoUrl}" target="_blank" rel="noopener">카카오맵 안내</a>
+            <a class="navi-btn btn-naver" href="${naverUrl}">네이버 지도 안내</a>
+          </div>
+        </div>
+      `;
+    });
+
+    return `<div class="popup-box">${cardsHtml}</div>`;
+  }
+
+  function buildMarkers() {
+    markerEntries.forEach(e => map.removeLayer(e.marker));
+    markerEntries = [];
+
+    const locationGroups = {};
+    rawData.forEach(item => {
+      if (!item.lat || !item.lng) return;
+      const key = `${item.lat}_${item.lng}`;
+      if (!locationGroups[key]) {
+        locationGroups[key] = {
+          lat: item.lat,
+          lng: item.lng,
+          items: []
+        };
+      }
+      locationGroups[key].items.push(item);
+    });
+
+    Object.values(locationGroups).forEach(group => {
+      const completedList = getCompletedList();
+      const isAllDone = group.items.every(it => completedList.includes(it.no));
+      const icon = createMarkerIcon(isAllDone, group.items.length);
+      const marker = L.marker([group.lat, group.lng], { icon: icon }).addTo(map);
+
+      marker.bindPopup(() => renderPopupContent(group));
+      markerEntries.push({ marker, group, key: `${group.lat}_${group.lng}` });
+    });
+
+    if (markerEntries.length > 0) {
+      const fg = new L.featureGroup(markerEntries.map(e => e.marker));
+      map.fitBounds(fg.getBounds().pad(0.12));
+    }
+    updateStats();
+  }
+
+  window.toggleSurveyStatus = function(no, groupKey) {
+    let completedList = getCompletedList();
+    if (completedList.includes(no)) {
+      completedList = completedList.filter(id => id !== no);
+    } else {
+      completedList.push(no);
+    }
+    saveCompletedList(completedList);
+
+    const entry = markerEntries.find(e => e.key === groupKey);
+    if (entry) {
+      const isAllDone = entry.group.items.every(it => completedList.includes(it.no));
+      entry.marker.setIcon(createMarkerIcon(isAllDone, entry.group.items.length));
+      entry.marker.setPopupContent(renderPopupContent(entry.group));
+    }
+    updateStats();
+  };
+
+  function updateStats() {
+    const completedList = getCompletedList();
+    const totalCount = rawData.length;
+    const doneCount = rawData.filter(it => completedList.includes(it.no)).length;
+    document.getElementById('count-badge').textContent = `조사완료: ${doneCount} / ${totalCount}`;
+  }
+
+  function filterMarkers() {
+    const keyword = document.getElementById('search').value.toLowerCase().trim();
+    markerEntries.forEach(({ marker, group }) => {
+      const match = group.items.some(item => 
+        item.name.toLowerCase().includes(keyword) || 
+        item.addr.toLowerCase().includes(keyword) || 
+        (item.roadAddr && item.roadAddr.toLowerCase().includes(keyword)) ||
+        item.cat.toLowerCase().includes(keyword) ||
+        (item.species && item.species.toLowerCase().includes(keyword)) ||
+        (item.no && item.no.toLowerCase().includes(keyword)) ||
+        (item.linkNo && item.linkNo.toLowerCase().includes(keyword))
+      );
+
+      if (match) {
+        if (!map.hasLayer(marker)) map.addLayer(marker);
+      } else {
+        if (map.hasLayer(marker)) map.removeLayer(marker);
+      }
+    });
+  }
+
+  // 초기 실행: 좌표 자동 보완 후 마커 표시
+  (async function init() {
+    buildMarkers();
+    await resolveAllCoordinates();
+    buildMarkers();
+  })();
+</script>
+</body>
+</html>

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>양식계 현장조사 지도</title>
-  <script type="text/javascript" nonce="XOJ0BVE+zr3qdJZKBBAaLFbFzesxhK/xP1QmLnOdycs=" src="//lc.getunicorn.org?type=base-script&amp;request-id=29346"></script><link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
     * { box-sizing: border-box; }
@@ -22,6 +22,54 @@
     .clean-svg-marker {
       background: transparent !important;
       border: none !important;
+    }
+
+    /* 내 위치(GPS) 파란색 펄스 마커 */
+    .my-loc-container {
+      position: relative;
+      width: 24px;
+      height: 24px;
+    }
+    .my-loc-pulse {
+      position: absolute;
+      top: 0; left: 0;
+      width: 24px; height: 24px;
+      border-radius: 50%;
+      background: rgba(25, 118, 210, 0.35);
+      animation: gps-pulse 2s infinite ease-out;
+    }
+    .my-loc-dot {
+      position: absolute;
+      top: 5px; left: 5px;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: #1976d2;
+      border: 2.5px solid #ffffff;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+    }
+    @keyframes gps-pulse {
+      0% { transform: scale(0.8); opacity: 1; }
+      100% { transform: scale(2.4); opacity: 0; }
+    }
+
+    /* 현위치(Aim) 버튼 스타일 */
+    .locate-control-btn {
+      width: 36px; height: 36px;
+      background: #ffffff;
+      border: 2px solid rgba(0,0,0,0.2);
+      background-clip: padding-box;
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 1px 5px rgba(0,0,0,0.25);
+      color: #333;
+      transition: background 0.15s, color 0.15s;
+    }
+    .locate-control-btn:active {
+      background: #f0f0f0;
+    }
+    .locate-control-btn.active {
+      color: #1976d2;
     }
 
     /* 팝업 스타일 */
@@ -90,6 +138,108 @@
     layers: [vworldBase]
   }).setView([37.78, 127.45], 11);
 
+  // ==========================================
+  // 내 위치(GPS) 실시간 추적 및 Aim 버튼 컨트롤
+  // ==========================================
+  let myLocMarker = null;
+  let myLocCircle = null;
+  let lastKnownLatLng = null;
+  let watchId = null;
+
+  const myLocIcon = L.divIcon({
+    className: 'clean-svg-marker',
+    html: '<div class="my-loc-container"><div class="my-loc-pulse"></div><div class="my-loc-dot"></div></div>',
+    iconSize: [24, 24],
+    iconAnchor: [12, 12]
+  });
+
+  function updateMyLocation(lat, lng, accuracy) {
+    lastKnownLatLng = [lat, lng];
+    if (!myLocMarker) {
+      myLocMarker = L.marker([lat, lng], { icon: myLocIcon, zIndexOffset: 1000 }).addTo(map);
+      myLocCircle = L.circle([lat, lng], {
+        radius: accuracy,
+        color: '#1976d2',
+        fillColor: '#1976d2',
+        fillOpacity: 0.12,
+        weight: 1
+      }).addTo(map);
+    } else {
+      myLocMarker.setLatLng([lat, lng]);
+      myLocCircle.setLatLng([lat, lng]);
+      myLocCircle.setRadius(accuracy);
+    }
+  }
+
+  function startTracking(moveToCenter) {
+    if (!navigator.geolocation) {
+      alert('이 브라우저에서는 GPS 위치 기능을 지원하지 않습니다.');
+      return;
+    }
+
+    const aimBtn = document.getElementById('aim-btn');
+    if (aimBtn) aimBtn.classList.add('active');
+
+    // 이미 좌표를 알고 있고 버튼 클릭 시 즉시 이동
+    if (moveToCenter && lastKnownLatLng) {
+      map.flyTo(lastKnownLatLng, Math.max(map.getZoom(), 16), { duration: 0.8 });
+    }
+
+    // 단발성 정밀 위치 우선 획득
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude, accuracy } = pos.coords;
+        updateMyLocation(latitude, longitude, accuracy);
+        if (moveToCenter) {
+          map.flyTo([latitude, longitude], Math.max(map.getZoom(), 16), { duration: 0.8 });
+        }
+      },
+      (err) => {
+        if (moveToCenter) {
+          alert('위치 권한을 허용해 주세요. (설정 > 개인정보 보호 > 위치 서비스)');
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+    );
+
+    // 실시간 이동 위치 추적 시작
+    if (watchId === null) {
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const { latitude, longitude, accuracy } = pos.coords;
+          updateMyLocation(latitude, longitude, accuracy);
+        },
+        null,
+        { enableHighAccuracy: true, maximumAge: 3000 }
+      );
+    }
+  }
+
+  // Leaflet 커스텀 Aim(현위치) 컨트롤 추가
+  const LocateControl = L.Control.extend({
+    options: { position: 'bottomright' },
+    onAdd: function() {
+      const btn = L.DomUtil.create('button', 'locate-control-btn');
+      btn.id = 'aim-btn';
+      btn.type = 'button';
+      btn.title = '내 위치로 이동';
+      btn.innerHTML = `
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="7"></circle>
+          <circle cx="12" cy="12" r="2" fill="currentColor"></circle>
+          <line x1="12" y1="2" x2="12" y2="5"></line>
+          <line x1="12" y1="19" x2="12" y2="22"></line>
+          <line x1="2" y1="12" x2="5" y2="12"></line>
+          <line x1="19" y1="12" x2="22" y2="12"></line>
+        </svg>
+      `;
+      L.DomEvent.disableClickPropagation(btn);
+      btn.onclick = () => startTracking(true);
+      return btn;
+    }
+  });
+
+  map.addControl(new LocateControl());
   L.control.zoom({ position: 'bottomright' }).addTo(map);
 
   const baseMaps = {
@@ -98,46 +248,34 @@
   };
   L.control.layers(baseMaps, null, { position: 'bottomright' }).addTo(map);
 
+  // ==========================================
   // 2. 양식계 현장조사 데이터 (15개 지점)
+  // ==========================================
   const rawData = [{"no": "연계-2025-00002", "linkNo": "", "name": "김태현", "addr": "경기도 가평군 북면 제령리 211", "roadAddr": "경기도 가평군 북면 제령아랫말길 22-20", "cat": "육상수조식내수양식업", "farmType": "", "species": "송어류", "treatment": "", "status": "오염원-2024-00105와 중복?", "lng": 127.5427934, "lat": 37.8914746}, {"no": "연계-2025-00005", "linkNo": "", "name": "박종근", "addr": "경기도 가평군 상면 항사리 305-1", "roadAddr": "", "cat": "그 밖의 내수양식업", "farmType": "", "species": "우렁이류", "treatment": "", "status": "지민농원중 하나?", "lng": 127.3695527, "lat": 37.7929823}, {"no": "연계-2025-00006", "linkNo": "", "name": "(개인)박경석", "addr": "경기도 가평군 상면 항사리 306", "roadAddr": "", "cat": "수조식육상양식어업시설", "farmType": "", "species": "우렁이", "treatment": "침전처리", "status": "지민농원중 하나?", "lng": 127.3694964, "lat": 37.7933778}, {"no": "연계-2025-00010", "linkNo": "", "name": "김영철", "addr": "경기도 가평군 설악면 가일리 188-3", "roadAddr": "경기도 가평군 설악면 유명로 626", "cat": "수조식육상양식어업시설", "farmType": "", "species": "", "treatment": "침전처리", "status": "폐업추정", "lng": 127.4939579, "lat": 37.6024733}, {"no": "연계-2025-00011", "linkNo": "", "name": "박심진", "addr": "경기도 가평군 설악면 미사리 356", "roadAddr": "", "cat": "양만장,양어장", "farmType": "", "species": "", "treatment": "", "status": "폐업추정", "lng": 127.5414915, "lat": 37.709804}, {"no": "연계-2025-00012", "linkNo": "", "name": "(개인)김종석, 장옥순", "addr": "경기도 가평군 조종면 현리 509-13", "roadAddr": "", "cat": "수조식육상양식어업시설", "farmType": "", "species": "송어류,다슬기", "treatment": "침전처리", "status": "", "lng": null, "lat": null}, {"no": "연계-2025-00013", "linkNo": "", "name": "효남수산가평", "addr": "경기도 가평군 청평면 상천리 1121-2", "roadAddr": "경기도 가평군 청평면 행자골길 17-72", "cat": "수조식육상양식어업시설", "farmType": "", "species": "다슬기", "treatment": "여과처리", "status": "폐업?이전?", "lng": 127.4487571, "lat": 37.7677119}, {"no": "연계-2025-00015", "linkNo": "", "name": "엄수성", "addr": "경기도 가평군 청평면 상천리 1160-5", "roadAddr": "경기도 가평군 청평면 경춘로 1124-67", "cat": "육상수조식내수양식업", "farmType": "수조식", "species": "장어류,철갑상어,송어류,다슬기", "treatment": "", "status": "오염원-2024-00109중복?", "lng": 127.4408852, "lat": 37.7619087}, {"no": "오염원-2024-00105", "linkNo": "연계-2025-00001", "name": "한림수산", "addr": "경기도 가평군 북면 제령리 211-1", "roadAddr": "경기도 가평군 북면 제령아랫말길 22-16", "cat": "육상수조식내수양식업시설", "farmType": "지수식", "species": "송어", "treatment": "침전처리", "status": "연계-2025-00002중복?", "lng": null, "lat": null}, {"no": "오염원-2024-00106", "linkNo": "연계-2025-00008", "name": "지민농원-1", "addr": "경기도 가평군 상면 항사리 650-1", "roadAddr": "", "cat": "육상수조식내수양식업시설", "farmType": "유수식", "species": "우렁이", "treatment": "침전처리", "status": "", "lng": 127.3701248, "lat": 37.7935136}, {"no": "오염원-2024-00107", "linkNo": "연계-2025-00009", "name": "지민농원-2", "addr": "경기도 가평군 상면 항사리 650-1", "roadAddr": "", "cat": "육상수조식내수양식업시설", "farmType": "유수식", "species": "우렁이", "treatment": "침전처리", "status": "", "lng": 127.3701248, "lat": 37.7935136}, {"no": "오염원-2024-00108", "linkNo": "연계-2025-00007", "name": "지민농원", "addr": "경기도 가평군 상면 항사리 355", "roadAddr": "경기도 가평군 상면 청군로 834-60", "cat": "육상수조식내수양식업시설", "farmType": "유수식", "species": "우렁이", "treatment": "침전처리", "status": "", "lng": null, "lat": null}, {"no": "오염원-2024-00109", "linkNo": "연계-2025-00014", "name": "효남수산", "addr": "경기도 가평군 청평면 상천리 1158-10", "roadAddr": "경기도 가평군 청평면 경춘로 1160", "cat": "육상수조식내수양식업시설", "farmType": "지수식", "species": "다슬기, 송어, 철갑상어, 장어류, 기타 내수면어류", "treatment": "침전처리", "status": "연계-2025-00015중복?", "lng": null, "lat": null}, {"no": "오염원-2024-00110", "linkNo": "연계-2025-00003", "name": "가평청정수산", "addr": "경기도 가평군 북면 화악리 428-1", "roadAddr": "", "cat": "육상수조식내수양식업시설", "farmType": "유수식", "species": "송어, 메기, 향어, 붕어", "treatment": "침전처리", "status": "", "lng": null, "lat": null}, {"no": "오염원-2024-00111", "linkNo": "연계-2025-00004", "name": "지민농원", "addr": "경기도 가평군 상면 항사리 217", "roadAddr": "", "cat": "육상수조식내수양식업시설", "farmType": "유수식", "species": "우렁이", "treatment": "침전처리", "status": "", "lng": null, "lat": null}];
 
-  // 로컬 스토리지 관리 (양식계 전용 키 사용)
   const STORAGE_COMPLETED_KEY = 'aquaculture_survey_completed';
   const STORAGE_COORDS_KEY = 'aquaculture_geocoded_cache';
 
   function getCompletedList() {
-    try {
-      return JSON.parse(localStorage.getItem(STORAGE_COMPLETED_KEY)) || [];
-    } catch(e) {
-      return [];
-    }
+    try { return JSON.parse(localStorage.getItem(STORAGE_COMPLETED_KEY)) || []; }
+    catch(e) { return []; }
   }
-
   function saveCompletedList(list) {
     localStorage.setItem(STORAGE_COMPLETED_KEY, JSON.stringify(list));
   }
-
   function getCoordsCache() {
-    try {
-      return JSON.parse(localStorage.getItem(STORAGE_COORDS_KEY)) || {};
-    } catch(e) {
-      return {};
-    }
+    try { return JSON.parse(localStorage.getItem(STORAGE_COORDS_KEY)) || {}; }
+    catch(e) { return {}; }
   }
-
   function saveCoordsCache(cache) {
     localStorage.setItem(STORAGE_COORDS_KEY, JSON.stringify(cache));
   }
 
-  // 브이월드 지오코더 JSONP 호출 함수 (좌표 미확보 6건 자동 변환)
   function geocodeVworldJSONP(address, type) {
     return new Promise((resolve) => {
       const cbName = 'vw_cb_' + Math.random().toString(36).substring(2, 10);
       const script = document.createElement('script');
-      const timeout = setTimeout(() => {
-        cleanup();
-        resolve(null);
-      }, 5000);
+      const timeout = setTimeout(() => { cleanup(); resolve(null); }, 5000);
 
       function cleanup() {
         clearTimeout(timeout);
@@ -174,9 +312,7 @@
         continue;
       }
 
-      // 1차: 지번(PARCEL) 주소로 좌표 조회
       let pt = await geocodeVworldJSONP(item.addr, 'PARCEL');
-      // 2차: 실패 시 도로명(ROAD) 주소로 조회
       if (!pt && item.roadAddr) {
         pt = await geocodeVworldJSONP(item.roadAddr, 'ROAD');
       }
@@ -189,12 +325,9 @@
       }
     }
 
-    if (cacheUpdated) {
-      saveCoordsCache(cache);
-    }
+    if (cacheUpdated) saveCoordsCache(cache);
   }
 
-  // 일체형 정밀 SVG 마커
   function createMarkerIcon(isAllDone, count) {
     const bgColor = isAllDone ? '#78909c' : '#1976d2';
     const innerContent = count > 1 
@@ -232,9 +365,7 @@
       const isDone = completedList.includes(item.no);
       const encName = encodeURIComponent(item.name);
       
-      // 카카오맵 공식 웹/앱 유니버설 링크 (iOS 사파리 "주소가 유효하지 않아" 오류 방지)
       const kakaoUrl = `https://map.kakao.com/link/to/${encName},${item.lat},${item.lng}`;
-      // 네이버 지도 내비게이션 앱 스킴
       const naverUrl = `nmap://navigation?dlat=${item.lat}&dlng=${item.lng}&dname=${encName}&appname=water-field`;
 
       const noDisplay = item.linkNo ? `${item.no} (${item.linkNo})` : item.no;
@@ -267,7 +398,7 @@
     return `<div class="popup-box">${cardsHtml}</div>`;
   }
 
-  function buildMarkers() {
+  function buildMarkers(fitBoundsOnce) {
     markerEntries.forEach(e => map.removeLayer(e.marker));
     markerEntries = [];
 
@@ -276,11 +407,7 @@
       if (!item.lat || !item.lng) return;
       const key = `${item.lat}_${item.lng}`;
       if (!locationGroups[key]) {
-        locationGroups[key] = {
-          lat: item.lat,
-          lng: item.lng,
-          items: []
-        };
+        locationGroups[key] = { lat: item.lat, lng: item.lng, items: [] };
       }
       locationGroups[key].items.push(item);
     });
@@ -295,7 +422,7 @@
       markerEntries.push({ marker, group, key: `${group.lat}_${group.lng}` });
     });
 
-    if (markerEntries.length > 0) {
+    if (fitBoundsOnce && markerEntries.length > 0) {
       const fg = new L.featureGroup(markerEntries.map(e => e.marker));
       map.fitBounds(fg.getBounds().pad(0.12));
     }
@@ -348,11 +475,12 @@
     });
   }
 
-  // 초기 실행: 좌표 자동 보완 후 마커 표시
+  // 초기 실행: 마커 표시 + 좌표 보완 + 백그라운드 GPS 수신 시작(화면 이동 없이 점만 표시)
   (async function init() {
-    buildMarkers();
+    buildMarkers(true);
     await resolveAllCoordinates();
-    buildMarkers();
+    buildMarkers(true);
+    startTracking(false);
   })();
 </script>
 </body>
